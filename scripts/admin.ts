@@ -1,0 +1,10 @@
+import { writeFile } from 'node:fs/promises';
+import { hashPassword, normalizeEmail, validPassword } from '../src/security';
+const email = normalizeEmail(process.env.BOOTSTRAP_ADMIN_EMAIL || '');
+const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+if (!email || !validPassword(password)) throw new Error('请通过 BOOTSTRAP_ADMIN_EMAIL 和 BOOTSTRAP_ADMIN_PASSWORD 设置邮箱和6–128字符密码');
+const quote = (s: string) => "'" + s.replaceAll("'", "''") + "'";
+const id=crypto.randomUUID(),now=new Date().toISOString();
+const sql = `INSERT INTO users(id,email,password_hash,name,role,created_at) VALUES(${quote(id)},${quote(email)},${quote(await hashPassword(password))},'管理员','ADMIN',${quote(now)});\nINSERT INTO installation(id,admin_id,completed_at) VALUES(1,${quote(id)},${quote(now)}) ON CONFLICT(id) DO NOTHING;\n`;
+await writeFile('admin-bootstrap.sql', sql, { mode: 0o600 });
+console.log('已生成忽略提交的 admin-bootstrap.sql；通过 wrangler d1 execute 导入后删除。重复邮箱会拒绝，不会覆盖已有账号。');

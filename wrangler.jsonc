@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vip-classroom-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-17",
+  "vars": { "APP_ORIGIN": "http://localhost:5173", "ENVIRONMENT": "local" },
+  "d1_databases": [{ "binding": "DB", "database_name": "classroom", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "classroom-private" }],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["0 * * * *"] }
+}

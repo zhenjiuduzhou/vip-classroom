@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env*
+wrangler.production.jsonc
+release/
+dist/
+coverage/
+admin-bootstrap.sql
+.local-seed.sql
+playwright-report/
+test-results/
+screenshots/

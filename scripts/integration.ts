@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+const base=process.env.TEST_BASE_URL||'http://localhost:5173';
+const headers={'Content-Type':'application/json',Origin:base,'X-CSRF-Protection':'1'};
+class Client{
+  cookie='';
+  async request(path:string,method='GET',data?:unknown,status=200):Promise<any>{
+    const r=await fetch(base+path,{method,headers:{...headers,Cookie:this.cookie},body:data===undefined?undefined:JSON.stringify(data)});
+    const result=await r.json().catch(()=>null);
+    assert.equal(r.status,status,`${method} ${path}: ${JSON.stringify(result)}`);
+    const cookie=r.headers.get('set-cookie');if(cookie)this.cookie=cookie.split(';')[0];return result;
+  }
+  async login(account:string){await this.request('/api/v1/auth/login','POST',{account,password:'Demo-Classroom-2026'});}
+}
+const admin=new Client(),student=new Client(),expired=new Client(),pending=new Client();
+await admin.login('admin@example.com');await student.login('student@example.com');await pending.login('pending@example.com');await expired.login('expired@example.com');
+const {courses}=await student.request('/api/v1/courses');assert.equal(courses.filter((c:any)=>c.accessible).length,3);
+assert.equal((await pending.request('/api/v1/courses?mine=1')).courses.length,0);
+assert.equal((await expired.request('/api/v1/courses?mine=1')).courses.length,0);
+await expired.request('/api/v1/courses/demo-course-1','GET',undefined,403);
+await student.request('/api/v1/courses/demo-course-4','GET',undefined,403);
+await student.request('/api/v1/admin/tree','GET',undefined,403);
+const video=await readFile('tests/fixtures/sample.mp4');
+const media=await fetch(base+'/media/lessons/demo-lesson-1',{headers:{Cookie:student.cookie,Range:'bytes=0-99'}});assert.equal(media.status,206);assert.equal(media.headers.get('content-range'),`bytes 0-99/${video.length}`);assert.deepEqual(Buffer.from(await media.arrayBuffer()),video.subarray(0,100));
+const invalid=await fetch(base+'/media/lessons/demo-lesson-1',{headers:{Cookie:student.cookie,Range:`bytes=${video.length}-`}});assert.equal(invalid.status,416);
+const head=await fetch(base+'/media/lessons/demo-lesson-1',{method:'HEAD',headers:{Cookie:student.cookie}});assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(video.length));
+assert.equal((await fetch(base+'/media/lessons/demo-lesson-1')).status,401);
+const {id:course}=await admin.request('/api/v1/admin/courses','POST',{title:'集成测试课程',description:'自动创建并清理',requiredVip:3},201);
+const {id:chapter}=await admin.request('/api/v1/admin/chapters','POST',{courseId:course,title:'测试章节'},201);
+const {id:second}=await admin.request('/api/v1/admin/chapters','POST',{courseId:course,title:'第二章'},201);
+// A valid MP4 plus a free box crosses two 16MiB boundaries without committing a huge fixture.
+const padding=Buffer.alloc(32*1024*1024+100);padding.writeUInt32BE(padding.length,0);padding.write('free',4);
+const largeVideo=Buffer.concat([video,padding]);
+const upload=await admin.request('/api/v1/admin/uploads','POST',{kind:'VIDEO',chapterId:chapter,filename:'sample.mp4',title:'上传的小节',fingerprint:'a'.repeat(64),size:largeVideo.length},201);
+assert.equal((await student.request('/api/v1/courses/'+course)).course.chapters[0].lessons.length,0);
+await admin.request(`/api/v1/admin/uploads/${upload.id}/complete`,'POST',{},400);
+await Promise.all([1,2,3].map(async partNumber=>{
+  const sign=await admin.request(`/api/v1/admin/uploads/${upload.id}/sign`,'POST',{partNumber});
+  const chunk=largeVideo.subarray((partNumber-1)*16*1024*1024,Math.min(partNumber*16*1024*1024,largeVideo.length));
+  const put=await fetch(base+sign.url,{method:'PUT',headers:{Origin:base,'X-CSRF-Protection':'1',Cookie:admin.cookie,'Content-Type':'video/mp4'},body:chunk});assert.equal(put.status,200);const etag=put.headers.get('etag');assert.ok(etag);
+  await admin.request(`/api/v1/admin/uploads/${upload.id}/parts`,'POST',{partNumber,etag});
+}));
+await admin.request(`/api/v1/admin/uploads/${upload.id}/complete`,'POST',{});
+await admin.request(`/api/v1/admin/uploads/${upload.id}/complete`,'POST',{});
+assert.equal((await student.request('/api/v1/courses/'+course)).course.chapters[0].lessons.length,1);
+await admin.request('/api/v1/admin/sort','POST',{kind:'chapters',parentId:course,ids:[second,chapter]});
+assert.equal((await student.request('/api/v1/courses/'+course)).course.chapters[0].id,second);
+await admin.request('/api/v1/admin/sort','POST',{kind:'chapters',parentId:course,ids:[chapter]},409);
+await admin.request('/api/v1/admin/move','POST',{kind:'lessons',id:upload.lessonId,targetId:second});
+assert.equal((await student.request('/api/v1/lessons/'+upload.lessonId)).lesson.courseId,course);
+const other=await admin.request('/api/v1/admin/courses','POST',{title:'VIP5测试',description:'',requiredVip:5},201);
+await admin.request('/api/v1/admin/move','POST',{kind:'chapters',id:second,targetId:other.id});
+await student.request('/api/v1/lessons/'+upload.lessonId,'GET',undefined,403);
+assert.equal((await fetch(base+'/media/lessons/'+upload.lessonId,{headers:{Cookie:student.cookie}})).status,403);
+await admin.request('/api/v1/admin/users/demo-student','PATCH',{email:'student@example.com',phone:'',name:'演示学员',vipLevel:1,expiresDate:''});
+assert.equal((await student.request('/api/v1/courses?mine=1')).courses.length,1);
+await admin.request('/api/v1/admin/users/demo-student','PATCH',{email:'student@example.com',phone:'',name:'演示学员',vipLevel:3,expiresDate:''});
+const cover=await readFile('tests/fixtures/cover.png');const coverTask=await admin.request('/api/v1/admin/uploads','POST',{kind:'COVER',courseId:course,filename:'cover.png',size:cover.length,fingerprint:'b'.repeat(64),contentType:'image/png'},201);
+const coverSign=await admin.request(`/api/v1/admin/uploads/${coverTask.id}/sign`,'POST',{});
+assert.equal((await fetch(base+coverSign.url,{method:'PUT',headers:{Origin:base,'X-CSRF-Protection':'1',Cookie:admin.cookie},body:cover})).status,200);
+await admin.request(`/api/v1/admin/uploads/${coverTask.id}/complete`,'POST',{});
+assert.equal((await fetch(base+'/media/covers/'+course)).status,200);
+const boundary=await admin.request('/api/v1/admin/uploads','POST',{kind:'VIDEO',chapterId:chapter,filename:'boundary.mp4',size:2_000_000_000,fingerprint:'e'.repeat(64)},201);
+await admin.request(`/api/v1/admin/uploads/${boundary.id}/cancel`,'POST',{});
+const cancelled=await admin.request('/api/v1/admin/uploads','POST',{kind:'VIDEO',chapterId:chapter,filename:'cancel.mp4',size:video.length,fingerprint:'c'.repeat(64)},201);
+await admin.request(`/api/v1/admin/uploads/${cancelled.id}/cancel`,'POST',{});
+assert.equal((await admin.request('/api/v1/admin/tree')).courses.find((c:any)=>c.id===course).chapters.find((ch:any)=>ch.id===chapter).lessons.length,0);
+await admin.request('/api/v1/admin/uploads','POST',{kind:'VIDEO',chapterId:chapter,filename:'too-large.mp4',size:2_000_000_001,fingerprint:'d'.repeat(64)},400);
+await admin.request('/api/v1/admin/courses/'+other.id,'DELETE');
+assert.equal((await fetch(base+'/media/lessons/'+upload.lessonId,{headers:{Cookie:admin.cookie}})).status,404);
+await admin.request('/api/v1/admin/courses/'+course,'DELETE');await admin.request('/api/v1/admin/cleanup','POST',{});
+const account=`integration-${Date.now()}@example.com`,newUser=new Client();
+const registered=await newUser.request('/api/v1/auth/register','POST',{email:account,password:'Demo-Classroom-2026',confirmPassword:'Demo-Classroom-2026',role:'ADMIN',vipLevel:5},201);assert.equal(registered.user.role,'USER');assert.equal(registered.user.vipLevel,null);
+await newUser.request('/api/v1/auth/register','POST',{email:account.toUpperCase(),password:'Demo-Classroom-2026',confirmPassword:'Demo-Classroom-2026'},409);
+await admin.request(`/api/v1/admin/users/${registered.user.id}/password`,'POST',{password:'New-Strong-Password-2026'});
+await newUser.request('/api/v1/auth/me','GET',undefined,401);
+await admin.request('/api/v1/admin/users/'+registered.user.id,'DELETE');
+await student.request('/api/v1/auth/logout','POST');await student.request('/api/v1/auth/me','GET',undefined,401);
+assert.equal((await fetch(base+'/api/v1/auth/logout',{method:'POST'})).status,403);
+console.log('本地D1/R2集成验收通过：身份、等级、到期、Range、分片/封面上传、取消、移动、排序、清理及密码重置。');
