@@ -1,6 +1,8 @@
 # Cloudflare 网页部署全流程
 
-使用 GitHub 和 CF 网页后台，不需要在自己电脑上打开终端。下文的“构建命令/部署命令”粘贴到 CF 表单，由 CF 服务器执行。菜单可能显示中文或英文，以括号内英文和字段名定位。官方资料核对于2026-09-18；尚未在真实CF账号上验证远程部署。
+主要通过 GitHub 和 CF 网页后台操作，无需本地安装Node.js或Wrangler。下文的“构建命令/部署命令”粘贴到 CF 表单，由 CF 服务器执行。仅在自动构建未触发、需要Deploy Hook时，可使用Windows自带PowerShell发送一条请求。菜单可能显示中文或英文，以括号内英文和字段名定位。
+
+更新于2026-09-18：根据用户提供的真实CF日志，已确认一次D1四个迁移、Worker发布、资源绑定、路由和Cron配置成功；正式域名health接口实测HTTP 200。管理员初始化、真实R2直传、播放、免费档CPU及大陆网络仍需另行验收。
 
 ## 固定名称与顺序
 
@@ -30,6 +32,8 @@
 3. 可以先解压提供的 `github-source.zip`，再把其中的文件和文件夹拖进上传区域。不要只上传ZIP，不要额外包一层webapp目录。
 4. 仓库根目录必须直接有 `package.json`、`package-lock.json`、`wrangler.jsonc`；保留src、web、public、migrations、scripts、deploy、docs、tests、e2e目录结构。文件过多时可以分批上传。
 5. 填提交说明 → Commit changes。
+
+记录完整仓库地址 `GitHub用户名/仓库名`。原项目仓库为 `zhenjiuduzhou/vip-classroom`；若复制到其他账号，例如 `zhenzhuo000/vip-classroom`，它就是另一个独立仓库。在原仓库提交不会触发连接到副本的Worker。Pages和Worker应连接你实际准备部署的那份完整仓库。
 
 **不要上传** `.dev.vars`、`.env*`、node_modules、.wrangler、dist、release、screenshots、test-results、admin-bootstrap.sql、.local-seed.sql或生成的wrangler.production.jsonc。GitHub网页上传不会依据.gitignore自动过滤，请在上传前检查。提供的源码ZIP已排除这些文件。
 
@@ -120,6 +124,8 @@
 2. 名称必须 `vip-classroom-api` → Deploy。临时Hello World随后会被仓库代码替换。
 3. Worker → Settings → Variables and Secrets，添加下表四项，类型均选 **Secret**。按界面提示Save / Deploy使设置生效。
 
+添加表单可能默认选“变量”，务必先把类型下拉框改为“机密 / Secret”，再填写值。不要将这四项配置成普通文本变量。保存后确认类型是Secret，值被隐藏；不要把密钥值截图或贴进日志分享。
+
 | Secret | 值 |
 | --- | --- |
 | BOOTSTRAP_TOKEN | 第7步初始化密钥 |
@@ -136,6 +142,8 @@
 只使用第9步创建的 `vip-classroom-api`，不创建第二个Worker，也不要再次点击Create application。
 
 1. CF → Workers & Pages → 打开 `vip-classroom-api` → Settings → Builds / Build → Connect，选第2步同一GitHub仓库，生产分支main，根目录留空或 `/`。
+
+连接后核对“Git存储库”中完整的用户名和仓库名，不要只看vip-classroom名称。Pages连接成功不会自动替Worker连接GitHub。
 2. 填下面命令，均由CF执行：
 
 | 字段 | 值 |
@@ -191,6 +199,60 @@ CF自动创建的构建令牌默认权限可能不含D1 Edit。Worker能发布�
 8. 运行变量应含APP_ORIGIN、ENVIRONMENT=production、R2_ACCOUNT_ID、R2_BUCKET_NAME=classroom-private；脚本设置每小时一次Cron。
 9. 打开 `https://classroom.yourdomain.com/api/v1/health`，应显示JSON且status为ok。freeTierVerified:false表示免费档性能尚未确认，不是连接错误。
 
+### 没有构建记录时：先核对仓库，再用部署挂钩触发
+
+“部署”页的“最近构建”显示“此Worker还没有构建”，说明这里尚无Git构建记录，不能使用Retry build。先核对第10步连接的完整仓库地址、main分支、构建监视路径及已保存的设置。在其他账号同名仓库提交不会触发这个Worker。
+
+如果Git连接正确，可使用Deploy Hook（部署挂钩）：
+
+1. 同一个Worker → 设置 → 构建，向下找到“部署挂钩”，点击右侧“＋添加”。这不是下方“Cron触发器”的添加按钮。
+2. 名称填 `manual-main`，分支选 `main`，创建并复制生成的Hook URL。
+3. Windows开始菜单搜索并打开PowerShell。不需要安装软件或切换到项目目录。
+4. 将下面引号中的文字替换成自己的完整Hook URL，粘贴到PowerShell并按回车：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "这里替换成完整的Hook URL"
+```
+
+5. 返回Worker → 部署 → 最近构建，刷新，查看新记录及日志。请求返回success:true表示触发已接受，不代表构建或发布已完成。
+
+Hook URL含触发凭据，只在本机/CF中使用，不上传GitHub或公开分享。浏览器地址栏打开URL发送的是GET，不能代替上述POST。此方法构建的是Worker当前连接的仓库，不会替你同步其他账号仓库的代码。[官方Deploy Hooks说明](https://developers.cloudflare.com/workers/ci-cd/builds/deploy-hooks/)
+
+### 日志成功但后台路由或Cron为空
+
+生产脚本实际执行 `wrangler deploy` 后，绑定、路由和Cron正常应在后台显示，不是“只在脚本中存在”。检查日志尾部是否同时出现：
+
+```text
+Uploaded vip-classroom-api
+Deployed vip-classroom-api triggers
+  你的正式域名/api/*
+  你的正式域名/media/*
+  schedule: 0 * * * *
+Current Version ID: ...
+Success: Deploy command completed
+```
+
+仅Build command completed不是部署成功。确认完整发布成功后：
+
+1. 关闭旧Worker页面，从Workers和Pages列表重新进入同一个Worker；必要时强制刷新。
+2. 核对当前CF账号的Account ID与CLOUDFLARE_ACCOUNT_ID一致，并核对最新已发布Version ID。相同名称的Worker可以存在于不同账号，不要混淆。
+3. “绑定”页检查DB和MEDIA；“域”页检查正式域名的两条路由。脚本应关闭workers.dev生产访问；若仍开启且路由空，继续核对账号、版本与页面状态。
+4. 设置 → 触发事件 → Cron触发器检查 `0 * * * *`。Cron变更传播可能需要最多15分钟。[官方Cron说明](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+5. 用正式域名health接口验证API路由。health成功仅验证这一条API请求，不能证明媒体权限或定时清理均已通过。
+
+不要仅因旧页面显示空白就重复添加路由和Cron。若账号、版本、刷新及等待后仍不一致，应结合实际日志继续排查；确需手动补配时，使用“添加路由”配置/api/*和/media/*，不要用“添加域名”占据Pages的整个域名；Cron为每小时一次。后续部署仍以构建生成的配置为准。
+
+### 日志出现密钥明文：修正运行时类型
+
+如果部署日志在vars差异中输出BOOTSTRAP_TOKEN、SETTINGS_ENCRYPTION_KEY或R2密钥的值，说明这些值被当作普通变量处理，不应忽略。
+
+1. Worker → 设置 → 变量和机密，检查四项运行时凭据，将其改为Secret；若界面不支持改类型，按提示移除普通变量后，以同名Secret重新添加并保存生效。
+2. 已输出到日志并分享的R2凭据应重新创建、更新Worker中的两项Secret，并撤销旧R2令牌。
+3. 尚未初始化时更换BOOTSTRAP_TOKEN；已初始化后可以删除它，入口仍永久关闭。
+4. SETTINGS_ENCRYPTION_KEY尚未使用时可换新；若已保存加密凭据，换密钥后必须重新填写后台缓存清理凭据。管理员密码与R2对象不由此密钥加密。
+
+不需要重建D1/R2、删除数据或重新执行已成功的迁移。
+
 网页路径 → Pages；/api/*和/media/* → Worker。前端已使用同域相对路径，不需要Pages另加Worker绑定，也不需要再部署Pages接线。
 
 生产配置文件由CF构建变量自动生成，不上传仓库。绑定、路由及上述四项受管理的运行变量以构建设置为准；不要只在运行时界面改这四项，否则下一次部署会恢复构建值。其他后台变量通过keep_vars:true保留；Secrets不会写入生成配置。
@@ -223,6 +285,9 @@ CF自动创建的构建令牌默认权限可能不含D1 Edit。Worker能发布�
 | 问题 | 检查 |
 | --- | --- |
 | 缺少BUILD_* | 放在Worker的Builds变量中，保存后重试 |
+| 提交后没有任何构建 | 核对完整仓库用户名/名称和生产分支；需要时使用部署挂钩POST触发 |
+| 日志发布成功但后台为空 | 核对CF账号与Version ID，重进页面；Cron传播最多15分钟 |
+| 日志出现密钥明文 | 普通变量误填为凭据，改运行时Secret并更换已暴露凭据 |
 | Worker名称不匹配 | 必须vip-classroom-api，仓库根目录正确 |
 | D1未授权 | 构建API token的D1 Edit及账号范围 |
 | 路由未授权 | Zone Read、Workers Routes Edit、区域名称、DNS代理 |
@@ -235,4 +300,4 @@ CF自动创建的构建令牌默认权限可能不含D1 Edit。Worker能发布�
 | 上传CORS错误 | 网页数组格式、正式来源、PUT、Content-Type、ExposeHeaders ETag |
 | 登录/初始化1102 | 查看CPU预算和日志，重部署不能保证解决 |
 
-本次没有在你的CF账号创建资源、绑定域名或开通服务。线上权限、实际界面和性能仍以部署后的验收为准。
+CF资源及发布操作由用户完成；本次依据用户提供的真实日志及health实测补充说明。其他线上行为、权限和性能仍以实际验收为准。
