@@ -280,6 +280,77 @@ Success: Deploy command completed
 
 后续GitHub提交会触发Pages前端部署和Worker迁移/发布，两者独立，检查二者状态。保留迁移历史，不修改已执行迁移。重大数据库变更先备份并评估对旧Worker的兼容性。不同人各自填写CF配置即可复用。
 
+## 15. 已部署网站更换域名
+
+适用于继续使用同一 Cloudflare 账号、Pages 项目、Worker、D1 和 R2，仅更换网站网址。不需要重建项目、重新初始化管理员或导入数据；现有账号、VIP、课程和视频继续保留。前端使用同域相对路径，通常无需修改代码。
+
+以下以新网址 `https://classroom.newdomain.com` 为例。正式来源不带结尾斜杠；区域名称为 `newdomain.com`，不是子域名、Zone ID 或完整网址。
+
+### 15.1 接入新域名并绑定现有 Pages
+
+1. 如果换整个主域名，将 `newdomain.com` 添加到当前 Cloudflare 账号，按提示到注册商修改 Nameservers，等待区域状态 Active。只换已有区域下的子域名时，跳过接入步骤。
+2. Workers & Pages → 现有 Pages 项目 → Custom domains → Set up a domain，输入 `classroom.newdomain.com`，按提示确认 DNS。
+3. 等待域名状态 Active 和 HTTPS 生效，打开新网址确认首页正常。
+4. 新网站 DNS 记录必须为 Proxied（橙色云），供后续 Worker 路由接管 API 和媒体路径。必须在 Pages 中绑定域名，不能只手动改 CNAME。
+5. 先保留旧域名，等新网址完整验收后再处理旧入口。
+
+[Pages 自定义域名官方说明](https://developers.cloudflare.com/pages/configuration/custom-domains/)
+
+### 15.2 修改 Worker 构建变量和区域授权
+
+打开 `vip-classroom-api` → Settings → Builds → Build variables and secrets，修改：
+
+| 构建变量 | 示例值 | 说明 |
+| --- | --- | --- |
+| BUILD_APP_ORIGIN | `https://classroom.newdomain.com` | 新网站 HTTPS 来源，无结尾斜杠 |
+| BUILD_ZONE_NAME | `newdomain.com` | 新主域名对应的 Cloudflare 区域；只换子域名时保持原值 |
+
+保留原 CLOUDFLARE_ACCOUNT_ID、BUILD_D1_DATABASE_ID、D1/R2 绑定和运行时 Secrets，尤其不要因换域名重新生成 SETTINGS_ENCRYPTION_KEY。
+
+如果换主域名，检查第11步使用的构建 API Token：Zone → Zone → Read 和 Zone → Workers Routes → Edit 的区域范围必须包含新区域；仅授权旧区域的令牌需要调整。
+
+保存构建变量后，按第12步重新触发一次 Worker Git 构建部署。不要只修改运行时 APP_ORIGIN 或手动路由，否则下一次构建会按 BUILD_* 值覆盖。部署脚本会生成新的 APP_ORIGIN 和两条路由：
+
+```text
+classroom.newdomain.com/api/*
+classroom.newdomain.com/media/*
+```
+
+部署成功后，检查 Worker → Settings → Domains & Routes 中两条 Route 均指向同一个 Worker，并检查运行时 APP_ORIGIN 已为新来源。网站域名绑定在 Pages，Worker 使用路径路由，不添加占据整个网站域名的 Worker Custom Domain。
+
+当前代码只接受一个 APP_ORIGIN；切换后旧来源的写请求会被拒绝，两个网址不能同时作为完整业务入口。建议选择访问较少的时间完成切换并通知用户。
+
+[Worker 路由官方说明](https://developers.cloudflare.com/workers/configuration/routing/routes/)
+
+### 15.3 更新 R2 上传 CORS
+
+1. 打开新网站 `/deployment-tools`，输入新正式来源并生成 R2 网页 CORS 配置。换域名只需生成 CORS，无需生成或更换安装密钥。
+2. Cloudflare → R2 → `classroom-private` → Settings → CORS Policy，将 AllowedOrigins 更新为新来源，保持 PUT、Content-Type 和 ExposeHeaders ETag。
+3. 保存到 R2 后生效，无需为 CORS 另行部署代码。过渡期可以同时保留新旧来源，验收后移除旧来源；这不会使 Worker 同时接受两个 APP_ORIGIN。
+4. 桶继续保持私有，不为视频桶添加公共自定义域名。
+
+[R2 CORS 官方说明](https://developers.cloudflare.com/r2/buckets/cors/)
+
+### 15.4 更新可选缓存清理设置与验收
+
+如果后台“系统设置”启用了 Cloudflare 缓存清理：换主域名后更新新区域的 Zone ID，并确保缓存清理 API Token 有新区域的 Cache Purge 权限；只换同一区域下的子域名，Zone ID 不变。保存后点击“测试已保存配置”，详见[系统设置说明](system-settings.md)。新区域如有自定义缓存规则，应绕过 /api/* 和 /media/*，尊重 no-store。
+
+逐项验证：
+
+- 新网址 `/api/v1/health` 返回 JSON，status 为 ok；仅显示首页不能证明后端已接通。
+- 使用现有管理员账号重新登录，确认原有用户、VIP 和课程仍在；新域名不会继承旧域名的登录 Cookie。
+- 创建或编辑课程、上传封面和真实视频，确认写请求无来源校验 403，直传无 CORS 错误。
+- 播放原有与新上传的视频，测试拖动进度，并检查未登录用户无法访问受保护内容。
+- 在手机及实际使用网络验证访问。health 成功不能替代登录、上传与播放验收。
+
+### 15.5 旧域名跳转和清理
+
+确认新域名正常后，在旧域名的 Cloudflare 区域配置 Redirect Rule，将旧主机名的请求以 301 跳转到新网址，保留路径和查询参数，例如旧 `/login?next=...` 跳到新网址的对应地址。规则只匹配旧主机名，避免新域名跳转循环，并测试首页及课程深层链接。
+
+需要长期跳转时，保留旧域名注册、Cloudflare 区域和可代理的 DNS 记录，确保旧 HTTPS 仍可访问。旧域名跳转不会迁移登录状态，用户需在新网址重新登录。检查并移除不再使用的旧 Worker 路由；旧 Pages 绑定和 DNS 的清理应以不破坏跳转为前提。
+
+常见漏项：只改 Pages 域名会出现首页正常但 API 不通；未改 BUILD_APP_ORIGIN 会导致写请求 403；未改 R2 CORS 会导致上传失败；换主域名后未更新令牌区域范围会导致部署路由或缓存清理授权失败。
+
 ## 常见问题
 
 | 问题 | 检查 |
