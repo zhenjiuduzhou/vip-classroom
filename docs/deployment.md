@@ -85,8 +85,10 @@
 
 1. 打开正式网站 `/deployment-tools`，例如 `https://classroom.yourdomain.com/deployment-tools`。只需Pages，不必等Worker。
 2. 点击“生成两份独立密钥”，分别复制BOOTSTRAP_TOKEN和SETTINGS_ENCRYPTION_KEY并安全保存。由当前浏览器安全随机生成，不发送到服务器，不写浏览器存储；刷新会清空。
-3. 输入正式HTTPS网站来源，点击“生成 R2 网页 CORS 配置”。
-4. CF → R2 → classroom-private → Settings → CORS Policy → Add / Edit，粘贴生成的JSON数组，保存。
+3. 输入正式HTTPS网站来源，点击“生成 R2 网页 CORS 配置”，复制生成的JSON数组。
+4. **另行打开CF后台** → R2 → `classroom-private` → Settings → CORS Policy → Add / Edit，粘贴JSON，点击保存。
+
+网站工具只生成配置，不会自动写入CF。必须在R2后台保存才生效；保存CORS不需要重新部署Pages或Worker。AllowedOrigins使用纯HTTPS网址，不要带Markdown链接格式或结尾斜杠。
 
 示例（替换来源）：
 
@@ -129,17 +131,21 @@
 
 此时不用手动添加DB/MEDIA绑定，也不用手动添加路由，正式部署会统一配置。
 
-## 10. Worker连接同一个GitHub仓库
+## 10. 给第9步的同一个Worker连接GitHub
 
-1. Worker → Settings → Builds / Build → Connect Git，选第2步同一仓库，生产分支main，根目录留空或 `/`。
+只使用第9步创建的 `vip-classroom-api`，不创建第二个Worker，也不要再次点击Create application。
+
+1. CF → Workers & Pages → 打开 `vip-classroom-api` → Settings → Builds / Build → Connect，选第2步同一GitHub仓库，生产分支main，根目录留空或 `/`。
 2. 填下面命令，均由CF执行：
 
 | 字段 | 值 |
 | --- | --- |
 | Build command | `npm run cf:build` |
 | Deploy command | `npm run cf:deploy` |
-| Non-production branch deploy command | `npm run cf:preview` |
-| Builds for non-production branches | 关闭 |
+| Builds for non-production branches（启用预览构建） | 关闭 |
+| Non-production branch deploy command | 关闭预览构建时跳过，无需填写 |
+
+如以后开启非生产分支构建，可将Non-production branch deploy command填为 `npm run cf:preview`。该备用命令只输出跳过提示，不迁移数据库或发布Worker。
 
 3. 在 **Builds内的Build variables and secrets** 添加以下构建变量：
 
@@ -175,14 +181,15 @@ CF自动创建的构建令牌默认权限可能不含D1 Edit。Worker能发布�
 
 ## 12. 触发正式Worker部署
 
-1. 保存设置 → Builds → Retry build / Trigger build，也可在GitHub提交一次改动触发。
-2. 日志应依次显示：生产配置生成 → D1迁移成功或无需迁移 → Worker发布成功。
-3. 迁移失败会停止发布；迁移成功但发布失败时，迁移已生效，解决错误后重试即可。
-4. Worker → Bindings应显示 `DB` → classroom，`MEDIA` → classroom-private。
-5. Worker → Settings → Domains & Routes应有两条 **Route**：`classroom.yourdomain.com/api/*`、`classroom.yourdomain.com/media/*`。
-6. 不给Worker添加占据整个网站域名的Custom Domain；网站域名属于Pages，Worker按路径接管。[路由说明](https://developers.cloudflare.com/workers/configuration/routing/routes/)
-7. 运行变量应含APP_ORIGIN、ENVIRONMENT=production、R2_ACCOUNT_ID、R2_BUCKET_NAME=classroom-private；脚本设置每小时一次Cron。
-8. 打开 `https://classroom.yourdomain.com/api/v1/health`，应显示JSON且status为ok。freeTierVerified:false表示免费档性能尚未确认，不是连接错误。
+1. 先完成第10步Git连接、第10步构建变量以及第11步授权，再保存设置。Hello World发布记录不是Git构建记录，未连接仓库时不会有可重试的Git构建。
+2. 已有Git构建记录时，打开对应记录的详情，使用界面提供的Retry build（重试构建）。如果没有此按钮，在GitHub的main分支提交一次真实文件改动即可触发自动构建，不必寻找Trigger build按钮。
+3. 日志应依次显示：生产配置生成 → D1迁移成功或无需迁移 → Worker发布成功。
+4. 迁移失败会停止发布；迁移成功但发布失败时，迁移已生效，解决错误后重试即可。
+5. Worker → Bindings应显示 `DB` → classroom，`MEDIA` → classroom-private。
+6. Worker → Settings → Domains & Routes应有两条 **Route**：`classroom.yourdomain.com/api/*`、`classroom.yourdomain.com/media/*`。
+7. 不给Worker添加占据整个网站域名的Custom Domain；网站域名属于Pages，Worker按路径接管。[路由说明](https://developers.cloudflare.com/workers/configuration/routing/routes/)
+8. 运行变量应含APP_ORIGIN、ENVIRONMENT=production、R2_ACCOUNT_ID、R2_BUCKET_NAME=classroom-private；脚本设置每小时一次Cron。
+9. 打开 `https://classroom.yourdomain.com/api/v1/health`，应显示JSON且status为ok。freeTierVerified:false表示免费档性能尚未确认，不是连接错误。
 
 网页路径 → Pages；/api/*和/media/* → Worker。前端已使用同域相对路径，不需要Pages另加Worker绑定，也不需要再部署Pages接线。
 
