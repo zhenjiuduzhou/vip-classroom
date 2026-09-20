@@ -143,6 +143,10 @@
 
 1. CF → Workers & Pages → 打开 `vip-classroom-api` → Settings → Builds / Build → Connect，选第2步同一GitHub仓库，生产分支main，根目录留空或 `/`。
 
+只使用第9步创建的 `vip-classroom-api`，不创建第二个Worker，也不要再次点击Create application。
+
+1. CF → Workers & Pages → 打开 `vip-classroom-api` → Settings → Builds / Build → Connect，选第2步同一GitHub仓库，生产分支main，根目录留空或 `/`。
+
 连接后核对“Git存储库”中完整的用户名和仓库名，不要只看vip-classroom名称。Pages连接成功不会自动替Worker连接GitHub。
 2. 填下面命令，均由CF执行：
 
